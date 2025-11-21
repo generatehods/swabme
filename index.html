@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Jupiter DEX Aggregator — Pro (Demo)</title>
+  <style>
+    /* Simple modern minimal styling for the pro UI */
+    :root{
+      --bg:#0b1020; --card:#0f1724; --muted:#94a3b8; --accent:#7c3aed; --glass: rgba(255,255,255,0.03);
+      --success:#10b981;
+    }
+    html,body{height:100%; margin:0; font-family:Inter,ui-sans-serif,system-ui,"Segoe UI",Roboto,"Helvetica Neue",Arial;}
+    body{background:linear-gradient(180deg,#05060a 0%, #071024 100%); color:#e6eef8; display:flex; align-items:center; justify-content:center; padding:24px;}
+    .container{width:920px; max-width:96%; background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius:12px; padding:20px; box-shadow:0 8px 30px rgba(2,6,23,0.6);}
+    header{display:flex; align-items:center; justify-content:space-between; gap:12px;}
+    h1{font-size:18px; margin:0;}
+    .row{display:flex; gap:12px; margin-top:12px;}
+    .col{flex:1; background:var(--card); padding:14px; border-radius:10px;}
+    label{display:block; font-size:12px; color:var(--muted); margin-bottom:6px;}
+    select, input[type="number"], input[type="text"]{width:100%; padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.04); background:var(--glass); color:inherit; outline:none; font-size:14px;}
+    button{background:linear-gradient(90deg,var(--accent),#5b21b6); color:white; border:0; padding:10px 14px; border-radius:10px; cursor:pointer; font-weight:600;}
+    .muted{color:var(--muted); font-size:13px;}
+    .section-title{font-weight:700; margin-top:10px; font-size:13px;}
+    .info{font-size:13px; color:var(--muted); margin-top:8px;}
+    .route-item{padding:8px; border-radius:8px; margin-top:8px; background:rgba(255,255,255,0.02); display:flex; justify-content:space-between; align-items:center;}
+    .small{font-size:12px; color:var(--muted);}
+    .flex{display:flex; gap:8px; align-items:center;}
+    .right{margin-left:auto;}
+    .badge{background:rgba(255,255,255,0.03); padding:6px 8px; border-radius:999px; font-size:12px;}
+    .danger{color:#ff7b7b;}
+    .success{color:var(--success);}
+    footer{margin-top:14px; display:flex; justify-content:space-between; align-items:center;}
+    pre{white-space:pre-wrap; word-break:break-word; font-size:12px; color:var(--muted);}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>Jupiter DEX Aggregator — Pro (Demo)</h1>
+        <div class="muted">Frontend aggregator menggunakan Jupiter Quote & Swap APIs</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <div id="connectionStatus" class="small muted">Not connected</div>
+        <button id="connectBtn">Connect Wallet</button>
+      </div>
+    </header>
+
+    <div class="row" style="margin-top:16px;">
+      <div class="col" style="flex: 0 0 320px;">
+        <div class="section-title">Swap</div>
+        <label>From</label>
+        <select id="tokenA"></select>
+
+        <label style="margin-top:8px;">To</label>
+        <select id="tokenB"></select>
+
+        <label style="margin-top:8px;">Amount (input token)</label>
+        <input id="amount" type="number" min="0" step="any" placeholder="0.0" />
+
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <div style="flex:1">
+            <label>Slippage (bps)</label>
+            <input id="slippage" type="number" min="0" max="5000" step="1" value="50" />
+          </div>
+          <div style="flex:1">
+            <label>RPC Endpoint</label>
+            <input id="rpc" type="text" value="https://api.mainnet-beta.solana.com" />
+          </div>
+        </div>
+
+        <div style="display:flex; gap:8px; margin-top:12px;">
+          <button id="getQuoteBtn">Get Quote</button>
+          <button id="swapBtn" style="background:linear-gradient(90deg,#10b981,#059669);">Swap</button>
+        </div>
+
+        <div class="info" style="margin-top:10px;">Estimated output: <span id="estimatedOut">-</span></div>
+        <div class="info">Price impact: <span id="priceImpact">-</span></div>
+        <div class="info">Estimated fees: <span id="feeEstimate">-</span></div>
+
+      </div>
+
+      <div class="col">
+        <div class="section-title">Best Route & Breakdown</div>
+        <div id="routesContainer" style="margin-top:8px;">
+          <div class="muted small">No quote yet. Click "Get Quote".</div>
+        </div>
+
+        <div class="section-title" style="margin-top:12px;">Quote Raw JSON</div>
+        <pre id="quoteJson">—</pre>
+      </div>
+    </div>
+
+    <footer>
+      <div class="small muted">Demo integration with Jupiter (quote-api.jup.ag). Use at your own risk. This demo uses client-side requests to Jupiter APIs.</div>
+      <div class="small muted">Version: Pro Demo</div>
+    </footer>
+  </div>
+
+  <script>
+  // ========== CONFIG ==========
+  // Jupiter API base
+  const JUPITER_QUOTE_V6 = "https://quote-api.jup.ag/v6";
+  const JUPITER_TOKENLIST = "https://token.jup.ag/all";
+
+  // Utility: format big numbers safely
+  function toFixedString(num, decimals=6){
+    // avoid floating error - simple formatting
+    return Number(num).toLocaleString(undefined, {maximumFractionDigits:decimals});
+  }
+
+  // ========= STATE ==========
+  let tokenMap = {};    // address -> token metadata
+  let selectedTokenA = null;
+  let selectedTokenB = null;
+  let walletPublicKey = null;
+  let provider = null;
+
+  // ========= UI refs ==========
+  const tokenAEl = document.getElementById("tokenA");
+  const tokenBEl = document.getElementById("tokenB");
+  const amountEl = document.getElementById("amount");
+  const slippageEl = document.getElementById("slippage");
+  const rpcEl = document.getElementById("rpc");
+  const connectBtn = document.getElementById("connectBtn");
+  const getQuoteBtn = document.getElementById("getQuoteBtn");
+  const swapBtn = document.getElementById("swapBtn");
+  const connectionStatus = document.getElementById("connectionStatus");
+  const estimatedOutEl = document.getElementById("estimatedOut");
+  const priceImpactEl = document.getElementById("priceImpact");
+  const feeEstimateEl = document.getElementById("feeEstimate");
+  const routesContainer = document.getElementById("routesContainer");
+  const quoteJsonEl = document.getElementById("quoteJson");
+
+  // ========= Load token list ==========
+  async function loadTokens(){
+    try {
+      const res = await fetch(JUPITER_TOKENLIST);
+      const tokens = await res.json();
+      // tokens is array
+      tokens.sort((a,b)=> (a.symbol||'').localeCompare(b.symbol||''));
+      tokens.forEach(t=>{
+        tokenMap[t.address] = t;
+        const optA = document.createElement("option");
+        optA.value = t.address;
+        optA.textContent = `${t.symbol} — ${t.name}`;
+        tokenAEl.appendChild(optA);
+
+        const optB = document.createElement("option");
+        optB.value = t.address;
+        optB.textContent = `${t.symbol} — ${t.name}`;
+        tokenBEl.appendChild(optB);
+      });
+
+      // set defaults: SOL -> USDC if present
+      const sol = Object.values(tokenMap).find(x=>x.symbol==='SOL');
+      const usdc = Object.values(tokenMap).find(x=>x.symbol==='USDC');
+      if(sol) tokenAEl.value = sol.address;
+      if(usdc) tokenBEl.value = usdc.address;
+
+    } catch(e){
+      console.error("Failed to load tokens",e);
+      tokenAEl.innerHTML = "<option>Failed to load</option>";
+      tokenBEl.innerHTML = "<option>Failed to load</option>";
+    }
+  }
+
+  // ========= Wallet connect (Phantom) ==========
+  function updateConnectionUI(){
+    if(walletPublicKey){
+      connectionStatus.textContent = `Connected: ${walletPublicKey.toString().slice(0,6)}...${walletPublicKey.toString().slice(-4)}`;
+      connectBtn.textContent = "Disconnect";
+    } else {
+      connectionStatus.textContent = "Not connected";
+      connectBtn.textContent = "Connect Wallet";
+    }
+  }
+
+  async function connectWallet(){
+    try {
+      if(window.solana && window.solana.isPhantom){
+        provider = window.solana;
+        if(provider.isConnected){
+          await provider.disconnect();
+        }
+        const resp = await provider.connect();
+        walletPublicKey = resp.publicKey;
+        updateConnectionUI();
+        console.log("Connected", walletPublicKey.toString());
+      } else {
+        alert("Phantom wallet not found. Install Phantom extension or use a wallet that injects window.solana.");
+      }
+    } catch(e){
+      console.error("Connect fail", e);
+      alert("Failed to connect wallet: " + (e.message || e));
+    }
+  }
+
+  async function disconnectWallet(){
+    try {
+      if(provider && provider.disconnect){
+        await provider.disconnect();
+      }
+    } catch(e){
+      console.warn("Disconnect error", e);
+    } finally {
+      walletPublicKey = null;
+      provider = null;
+      updateConnectionUI();
+    }
+  }
+
+  connectBtn.addEventListener("click", async ()=>{
+    if(walletPublicKey) await disconnectWallet();
+    else await connectWallet();
+  });
+
+  // ========= Helpers ==========
+  function getDecimalsFor(mint){
+    const t = tokenMap[mint];
+    return t ? t.decimals : 6;
+  }
+
+  // Convert user-friendly amount (like 1.5) to integer amount for on-chain (according to decimals)
+  function uiAmountToAmount(amountFloat, decimals){
+    // compute integer safely
+    const factor = BigInt(10) ** BigInt(decimals);
+    // careful with floats -> convert as string then to BigInt
+    const parts = String(amountFloat).split('.');
+    let whole = parts[0] || '0';
+    let frac = parts[1] || '';
+    if(frac.length > decimals) frac = frac.slice(0,decimals); // truncate
+    while(frac.length < decimals) frac += '0';
+    const combined = BigInt(whole) * factor + BigInt(frac || '0');
+    return combined.toString();
+  }
+
+  // ========= QUOTE ==========
+  async function fetchQuote(inputMint, outputMint, amountUi, slippageBps, rpcEndpoint){
+    // amountUi: user amount, as decimal (e.g. 1.5)
+    const inDecimals = getDecimalsFor(inputMint);
+    const amountInt = uiAmountToAmount(amountUi, inDecimals); // string integer
+    const url = `${JUPITER_QUOTE_V6}/quote?inputMint=${inputMint}&outputMint=${outputMint}&amount=${amountInt}&slippageBps=${slippageBps}&onlyDirectRoutes=false`;
+    // optional: add fee account etc
+    const res = await fetch(url);
+    if(!res.ok) throw new Error("Quote API error: " + res.status);
+    const data = await res.json();
+    return data;
+  }
+
+  function renderQuoteToUI(quote){
+    quoteJsonEl.textContent = JSON.stringify(quote, null, 2);
+
+    if(!quote || !quote.data || quote.data.length === 0){
+      routesContainer.innerHTML = `<div class="muted small">No route found for this pair/amount.</div>`;
+      estimatedOutEl.textContent = "-";
+      priceImpactEl.textContent = "-";
+      feeEstimateEl.textContent = "-";
+      return;
+    }
+
+    // Use best route (first)
+    const best = quote.data[0];
+
+    // estimatedOut - convert from integer to UI using output decimals
+    const outDecimals = getDecimalsFor(best.outAmountMint);
+    // best.outAmount is a string int
+    const outAmount = Number(best.outAmount) / (10 ** outDecimals);
+    estimatedOutEl.textContent = `${toFixedString(outAmount, 6)} ${tokenMap[best.outAmountMint]?.symbol || ''}`;
+
+    // price impact: some quotes include priceImpactBps
+    const impactBps = best.priceImpactBps ?? null; // may exist
+    if(impactBps !== null){
+      const pct = Number(impactBps) / 100;
+      priceImpactEl.textContent = `${pct.toFixed(2)}%`;
+      if(pct > 1) priceImpactEl.className = "danger";
+      else priceImpactEl.className = "success";
+    } else {
+      priceImpactEl.textContent = "N/A";
+      priceImpactEl.className = "";
+    }
+
+    // fee breakdown - best.marketInfos may contain fee info; otherwise use feeBps etc
+    let feeText = "-";
+    try {
+      if(best.otherAmounts && best.otherAmounts.length){
+        // not standard; fallback
+      }
+      // Some fields: best.outAmount, best.inAmount, best.estimatedAmountOut
+      // Jupiter does not always provide explicit fee breakdown, but marketInfos contains AMM details
+      const totalFee = quote.feeBps ? (Number(quote.feeBps)/10000) : null;
+      // We'll approximate fees from best.otherAmount or marketInfos
+      let feeEstimate = 0;
+      if(best.marketInfos && best.marketInfos.length){
+        best.marketInfos.forEach(mi=>{
+          if(mi.totalFeeAmount) feeEstimate += Number(mi.totalFeeAmount || 0);
+        });
+      }
+      if(feeEstimate > 0){
+        // feeEstimate in lamports of output? uncertain — we'll show as raw
+        feeText = `${feeEstimate} (raw fee units)`;
+      } else if (totalFee !== null){
+        feeText = `${(totalFee*100).toFixed(4)}% (feeBps ${quote.feeBps})`
+      } else {
+        feeText = "N/A";
+      }
+    } catch(e){
+      feeText = "N/A";
+    }
+    feeEstimateEl.textContent = feeText;
+
+    // Render route breakdown: best.route may be an array of hop descriptions (some jup responses have .route or .marketInfos)
+    routesContainer.innerHTML = "";
+    // if marketInfos exist, use them
+    if(best.marketInfos && best.marketInfos.length){
+      best.marketInfos.forEach((mi, idx)=>{
+        const div = document.createElement("div");
+        div.className = "route-item";
+        const left = document.createElement("div");
+        left.innerHTML = `<div><strong>${idx+1}. ${mi.label || mi.marketName || mi.ammId || mi.id || "Pool"}</strong></div><div class="small">${mi.programId ? ("program: "+mi.programId.slice(0,6)) : ""}</div>`;
+        const right = document.createElement("div");
+        right.className = "small";
+        right.innerHTML = `${mi.inputMint ? (tokenMap[mi.inputMint]?.symbol || mi.inputMint.slice(0,6)) : ''} → ${mi.outputMint ? (tokenMap[mi.outputMint]?.symbol || mi.outputMint.slice(0,6)) : ''}`;
+        div.appendChild(left);
+        div.appendChild(right);
+        routesContainer.appendChild(div);
+      });
+    } else if(best.route && best.route.length){
+      best.route.forEach((r, idx)=>{
+        const div = document.createElement("div");
+        div.className = "route-item";
+        div.innerHTML = `<div><strong>${idx+1}. ${r} </strong></div>`;
+        routesContainer.appendChild(div);
+      });
+    } else {
+      routesContainer.innerHTML = `<div class="muted small">Route information not available in this quote response.</div>`;
+    }
+  }
+
+  // ========= SWAP ==========
+  async function doSwap(bestRoute, userPubkey, wrapUnwrapSol = true){
+    // bestRoute: one of quote.data entries (the chosen route)
+    // Build swap request to Jupiter /swap endpoint
+    // See: https://quote-api.jup.ag/v6/swap
+    const body = {
+      quoteResponse: bestRoute, // pass the chosen quote
+      userPublicKey: userPubkey,
+      wrapAndUnwrapSol: wrapUnwrapSol
+    };
+
+    const res = await fetch(`${JUPITER_QUOTE_V6}/swap`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+
+    if(!res.ok) {
+      const txt = await res.text();
+      throw new Error(`Swap request failed: ${res.status} ${txt}`);
+    }
+
+    const data = await res.json();
+    // data may contain swapTransaction (base64), setupTransaction (base64), swapTxHex etc
+    return data;
+  }
+
+  // Helper: base64 to Uint8Array
+  function base64ToUint8Array(base64) {
+    const binary_string = atob(base64);
+    const len = binary_string.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binary_string.charCodeAt(i);
+    }
+    return bytes;
+  }
+
+  // Send signed transaction via RPC
+  async function sendRawTx(signedTx, rpcEndpoint){
+    const raw = Buffer.from(signedTx).toString('base64'); // signedTx is Uint8Array or Buffer
+    const payload = {
+      "jsonrpc":"2.0",
+      "id":1,
+      "method":"sendTransaction",
+      "params":[raw, {"encoding":"base64"}]
+    };
+    const r = await fetch(rpcEndpoint, {
+      method:"POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify(payload)
+    });
+    const j = await r.json();
+    if(j.error) throw new Error("RPC sendTransaction error: " + JSON.stringify(j.error));
+    return j.result;
+  }
+
+  // Primary swap executor
+  async function executeSwapFlow(){
+    try {
+      if(!walletPublicKey) throw new Error("Wallet not connected");
+      const rpc = rpcEl.value.trim() || "https://api.mainnet-beta.solana.com";
+      // Re-fetch quote to ensure fresh
+      const inputMint = tokenAEl.value;
+      const outputMint = tokenBEl.value;
+      const amtUi = Number(amountEl.value);
+      if(!amtUi || amtUi <= 0) throw new Error("Enter valid amount");
+      const slippage = Number(slippageEl.value || 50);
+
+      // fetch fresh quote
+      const quote = await fetchQuote(inputMint, outputMint, amtUi, slippage, rpc);
+      if(!quote || !quote.data || quote.data.length===0) throw new Error("No route available");
+
+      const best = quote.data[0];
+      // call /swap to get transaction
+      const swapData = await doSwap(best, walletPublicKey.toString(), true);
+
+      // Jupiter returns swapTransaction as base64
+      const swapTxBase64 = swapData.swapTransaction;
+      const setupTxBase64 = swapData.setupTransaction; // may exist
+      // Order matters: if setupTransaction exists, sign & send it first
+      if(setupTxBase64){
+        const setupBytes = base64ToUint8Array(setupTxBase64);
+        // sign via Phantom
+        if(provider && provider.signAndSendTransaction){
+          // Phantom provides signAndSendTransaction API that signs and sends
+          const signedRes = await provider.signAndSendTransaction({ message: setupBytes });
+          // signedRes?.signature may be returned
+          console.log("Setup tx via signAndSendTransaction result:", signedRes);
+        } else if (provider && provider.signTransaction){
+          const {PublicKey, Transaction} = window.solanaWeb3 || {}; // maybe not present
+          // fallback: signTransaction requires Transaction object; we cannot easily construct it here without @solana/web3.js
+          // So prefer signAndSendTransaction if available
+          alert("Provider lacks signAndSendTransaction - cannot handle setup transaction automatically. Use Phantom with recent API.");
+          // continue anyway
+        } else {
+          // fallback: send raw signed tx not possible
+          console.warn("No provider signing available for setup tx");
+        }
+      }
+
+      if(!swapTxBase64) throw new Error("Swap transaction missing in Jupiter response");
+
+      const swapBytes = base64ToUint8Array(swapTxBase64);
+
+      if(provider && provider.signAndSendTransaction){
+        // modern Phantom API: signAndSendTransaction accepts a Transaction object or message,
+        // but many providers implement signTransaction(signTransaction) requiring Transaction object.
+        try {
+          const signed = await provider.signAndSendTransaction({ message: swapBytes });
+          // signed.signature or result
+          alert("Swap sent. Signature: " + (signed && signed.signature ? signed.signature : JSON.stringify(signed)));
+          console.log("signed send result:", signed);
+          return;
+        } catch(e){
+          console.warn("signAndSendTransaction failed, trying fallback", e);
+        }
+      }
+
+      // fallback: if provider.signTransaction present and returns signed raw tx
+      if(provider && provider.signTransaction){
+        try {
+          // Many wallet providers expect a Transaction object, which needs @solana/web3.js; we don't have it in this single file.
+          // However some providers (older Phantom API) support signAndSendTransaction - handled above.
+          alert("Your wallet may not support this automated signing method in this demo. Consider using Phantom with latest API.");
+          return;
+        } catch(e){
+          throw new Error("Signing failed: " + e.message);
+        }
+      }
+
+      // As a last resort: ask user to manually sign the base64 payload (not user-friendly).
+      throw new Error("Unable to sign transaction with your wallet provider. Ensure you're using Phantom with 'signAndSendTransaction' API.");
+
+    } catch (e){
+      console.error("Swap failed", e);
+      alert("Swap failed: " + (e.message || e));
+    }
+  }
+
+  // ========= Event handlers ==========
+  getQuoteBtn.addEventListener("click", async ()=>{
+    try {
+      const inputMint = tokenAEl.value;
+      const outputMint = tokenBEl.value;
+      const amtUi = Number(amountEl.value);
+      if(!amtUi || amtUi <= 0){ alert("Please enter a valid amount."); return; }
+      const slippage = Number(slippageEl.value || 50);
+      const rpc = rpcEl.value.trim() || "https://api.mainnet-beta.solana.com";
+
+      routesContainer.innerHTML = "<div class='muted small'>Fetching quote…</div>";
+      const quote = await fetchQuote(inputMint, outputMint, amtUi, slippage, rpc);
+      renderQuoteToUI(quote);
+    } catch(e){
+      console.error(e);
+      alert("Get quote failed: " + (e.message||e));
+      routesContainer.innerHTML = `<div class="muted small">Error fetching quote: ${e.message || e}</div>`;
+    }
+  });
+
+  swapBtn.addEventListener("click", async ()=>{
+    try {
+      if(!walletPublicKey){ alert("Please connect wallet first."); return; }
+      if(!confirm("Proceed with swap? Make sure you understand the route and slippage.")) return;
+      await executeSwapFlow();
+    } catch(e){
+      console.error(e);
+      alert("Swap failed: " + (e.message || e));
+    }
+  });
+
+  // Auto-load tokens on open
+  loadTokens();
+
+  // Small helper: try to detect provider availability and update UI
+  window.addEventListener("load", ()=>{
+    if(window.solana && window.solana.isPhantom){
+      // lazy connect state
+      provider = window.solana;
+      if(provider.isConnected){
+        walletPublicKey = provider.publicKey;
+      }
+      updateConnectionUI();
+    } else {
+      connectionStatus.textContent = "No injected wallet (Phantom recommended)";
+    }
+  });
+  </script>
+</body>
+</html>
